@@ -1,0 +1,86 @@
+name: Daily DWH Migration (Oracle → PostgreSQL)
+
+on:
+  # Run every day at 02:00 UTC
+  schedule:
+    - cron: "0 2 * * *"
+
+  # Allow manual runs from the GitHub UI / API
+  workflow_dispatch:
+    inputs:
+      tables:
+        description: "Comma-separated list of tables to migrate (leave empty for all)"
+        required: false
+        default: ""
+      mode:
+        description: "Migration mode: full or incremental"
+        required: false
+        default: "full"
+      dry_run:
+        description: "Dry run (no data written)"
+        required: false
+        default: "false"
+
+env:
+  # Oracle connection — stored as repository / environment secrets
+  ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+  ORACLE_PORT: ${{ secrets.ORACLE_PORT }}
+  ORACLE_SERVICE: ${{ secrets.ORACLE_SERVICE }}
+  ORACLE_USER: ${{ secrets.ORACLE_USER }}
+  ORACLE_PASSWORD: ${{ secrets.ORACLE_PASSWORD }}
+
+  # PostgreSQL connection — stored as repository / environment secrets
+  PG_HOST: ${{ secrets.PG_HOST }}
+  PG_PORT: ${{ secrets.PG_PORT }}
+  PG_DATABASE: ${{ secrets.PG_DATABASE }}
+  PG_USER: ${{ secrets.PG_USER }}
+  PG_PASSWORD: ${{ secrets.PG_PASSWORD }}
+
+  # Migration settings — can be overridden at runtime
+  MIGRATION_MODE: ${{ github.event.inputs.mode || 'full' }}
+  MIGRATION_TABLES: ${{ github.event.inputs.tables || '' }}
+  LOG_LEVEL: INFO
+
+jobs:
+  migrate:
+    name: Migrate Oracle DWH → PostgreSQL
+    runs-on: ubuntu-latest
+    environment: production   # use a protected environment for secrets approval
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run migration
+        run: |
+          EXTRA_FLAGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            EXTRA_FLAGS="--dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.tables }}" ]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --tables ${{ github.event.inputs.tables }}"
+          fi
+          if [ -n "${{ github.event.inputs.mode }}" ]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --mode ${{ github.event.inputs.mode }}"
+          fi
+          python migrate.py $EXTRA_FLAGS
+
+      - name: Upload migration log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-log-${{ github.run_id }}
+          path: "*.log"
+          if-no-files-found: ignore
+          retention-days: 30
